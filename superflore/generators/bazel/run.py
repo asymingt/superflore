@@ -18,6 +18,7 @@ import sys
 from rosinstall_generator.distro import get_distro
 from superflore.exceptions import NoGitHubAuthToken
 from superflore.generate_installers import generate_installers
+from superflore.generators.bazel.bazel_module import DEP_NAME_OVERRIDE
 from superflore.generators.bazel.gen_packages import regenerate_pkg
 from superflore.generators.bazel.overlay_instance import BazelOverlay
 from superflore.parser import get_parser
@@ -44,6 +45,7 @@ def main():
     args = parser.parse_args(sys.argv[1:])
     pr_comment = args.pr_comment
     skip_keys = args.skip_keys or []
+    skip_keys.extend(DEP_NAME_OVERRIDE.keys())
     selected_targets = None
     if not args.dry_run:
         if 'SUPERFLORE_GITHUB_TOKEN' not in os.environ:

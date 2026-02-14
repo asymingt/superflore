@@ -15,6 +15,27 @@
 from datetime import date
 from superflore.utils import get_pkg_version
 
+# Some of the vendored ROS packages are already in the Bazel Central Registry. So,
+# we override the version here to use the one from the registry.
+DEP_NAME_OVERRIDE = {
+    'console_bridge_vendor': 'bazel_dep(name = "console_bridge", version = "1.0.1")',
+    'google_benchmark_vendor': 'bazel_dep(name = "google_benchmark", version = "1.9.4")',
+    'fastcdr': 'bazel_dep(name = "fastcdr", version = "2.3.0")',
+    'fastdds': 'bazel_dep(name = "fastdds", version = "3.2.2")',
+    'gtest_vendor': 'bazel_dep(name = "googletest", version = "1.17.0.bcr.2")',
+    'libcurl_vendor': 'bazel_dep(name = "curl", version = "8.11.0.bcr.4")',
+    'libyaml_vendor': 'bazel_dep(name = "libyaml", version = "0.2.5")',
+    'lz4_vendor': 'bazel_dep(name = "lz4", version = "1.10.0.bcr.1")',
+    'mcap_vendor': 'bazel_dep(name = "mcap", version = "2.0.2")',
+    'mimick_vendor': 'bazel_dep(name = "mimick", version = "0.9.0")',
+    'pybind11_vendor': 'bazel_dep(name = "pybind11_bazel", version = "3.0.0")',
+    'spdlog_vendor': 'bazel_dep(name = "spdlog", version = "1.17.0")',
+    'sqlite3_vendor': 'bazel_dep(name = "sqlite3", version = "3.51.2")',
+    'tinyxml2_vendor': 'bazel_dep(name = "tinyxml2", version = "10.0.0")',
+    'yaml_cpp_vendor': 'bazel_dep(name = "yaml-cpp", version = "0.9.0")',
+    'zenoh_cpp_vendor': 'bazel_dep(name = "zenoh-cpp", version = "1.7.2")',
+    'zstd_vendor': 'bazel_dep(name = "zstd", version = "1.5.7.bcr.1")',
+}
 
 def get_bazel_version(distro, pkg_name):
     pkg = distro.release_packages[pkg_name]
@@ -36,8 +57,7 @@ class BazelModule(object):
         # External deps not supported in MODULE.bazel yet unless mapped to a module
 
     def get_module_text(self):
-        ret = """
-# Copyright {0} Open Source Robotics Foundation, Inc.
+        ret = """# Copyright {0} Open Source Robotics Foundation, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -57,8 +77,8 @@ class BazelModule(object):
         ret += 'module(\n'
         ret += '    name = "{0}",\n'.format(self.name)
         ret += '    version = "{0}",\n'.format(self.version)
+        ret += '    bazel_compatibility = [">=7.2.1"],\n'
         ret += ')\n\n'
-
         ret += '# Standard Bazel rules\n'
         ret += 'bazel_dep(name = "bazel_skylib", version = "1.9.0")\n'
         ret += 'bazel_dep(name = "cmake_configure_file", version = "0.1.3")\n'
@@ -74,15 +94,12 @@ class BazelModule(object):
         if self.deps:
              ret += '\n# ROS Dependencies\n'
              for dep in sorted(self.deps):
-                 # Look up version
                  try:
-                     dep_version = get_bazel_version(self.distro, dep)
-                     ret += 'bazel_dep(name = "{0}", version = "{1}")\n'.format(dep, dep_version)
-                     # Note: Dependency names in Bazel Registry might need a prefix like 'ros-<distro>-<pkg>'
-                     # or just '<pkg>'. For now, assuming current workspace context or eventually a registry.
-                     # If these are all in one giant repo, MODULE.bazel is per package.
-                     # To refer to other modules, they need to be in a registry or overridden.
+                    if dep in DEP_NAME_OVERRIDE:
+                        ret += DEP_NAME_OVERRIDE[dep] + '\n'
+                    else:
+                        dep_version = get_bazel_version(self.distro, dep)
+                        ret += 'bazel_dep(name = "{0}", version = "{1}")\n'.format(dep, dep_version)
                  except Exception:
-                     # Dep might not be in the distro (e.g. system key)
-                     pass
+                    pass
         return ret
