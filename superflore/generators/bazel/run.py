@@ -37,12 +37,23 @@ from superflore.utils import save_pr
 from superflore.utils import url_to_repo_org
 from superflore.utils import warn
 
-
 def main():
     overlay = None
     preserve_existing = True
     parser = get_parser('Deploy ROS packages into a Bazel workspace')
     args = parser.parse_args(sys.argv[1:])
+    # TODO(asymingt) - this in principle should work correctly. However, there is a bug with
+    # release tags, and how they incorrectly use a distribution cache.
+    if args.ros_distro_index:
+        if args.ros_distro_index.startswith('http'):
+            os.environ['ROSDISTRO_INDEX_URL'] = args.ros_distro_index
+        else:
+            # Assume it's a tag/branch of ros/rosdistro
+            url = 'https://raw.githubusercontent.com/ros/rosdistro/{0}/index-v4.yaml'.format(
+                args.ros_distro_index
+            )
+            os.environ['ROSDISTRO_INDEX_URL'] = url
+            info('Using rosdistro index: {0}'.format(url))
     pr_comment = args.pr_comment
     skip_keys = args.skip_keys or []
     skip_keys.extend(DEP_NAME_OVERRIDE.keys())

@@ -103,3 +103,19 @@ class BazelModule(object):
                  except Exception:
                     pass
         return ret
+
+
+    def get_source_json(self, url, integrity, strip_prefix):
+        return {
+            "integrity": integrity,
+            "url": url,
+            "strip_prefix": strip_prefix,
+        }
+
+    def get_metadata_json(self, homepage, maintainers, versions, yanked_versions=None):
+        return {
+            "homepage": homepage,
+            "maintainers": maintainers,
+            "versions": versions,
+            "yanked_versions": yanked_versions or {},
+        }

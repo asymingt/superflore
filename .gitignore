@@ -12,3 +12,5 @@ ros-indigo
 ros-kinetic
 ros-lunar
 .coverage
+.bazel
+.ros-central-registry

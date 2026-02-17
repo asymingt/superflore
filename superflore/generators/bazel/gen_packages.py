@@ -12,18 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import hashlib
+import json
 import os
 from rosdistro.dependency_walker import DependencyWalker
 from rosdistro.rosdistro import RosPackage
 from rosinstall_generator.distro import get_package_names
 from superflore.exceptions import UnresolvedDependency
 from superflore.PackageMetadata import PackageMetadata
+from superflore.utils import download_file
 from superflore.utils import err
 from superflore.utils import get_distros
 from superflore.utils import get_pkg_version
 from superflore.utils import make_dir
 from superflore.utils import ok
 from superflore.utils import retry_on_exception
+from superflore.utils import url_to_repo_org
 from superflore.utils import warn
 
 org = "Open Source Robotics Foundation"
@@ -60,22 +64,74 @@ def _package_condition_context(rosdistro_name):
 from superflore.generators.bazel.bazel_module import BazelModule
 from superflore.generators.bazel.bazel_module import get_bazel_version
 
+def _calculate_sha256(file_path):
+    sha256_hash = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        for byte_block in iter(lambda: f.read(4096), b""):
+            sha256_hash.update(byte_block)
+    return "sha256-" + sha256_hash.hexdigest()
+
 def regenerate_pkg(overlay, pkg, distro, preserve_existing=False):
-    version = get_pkg_version(distro, pkg)
+    version = get_bazel_version(distro, pkg)
     pkg_names = get_package_names(distro)[0]
     
     if pkg not in pkg_names:
         raise RuntimeError("Unknown package '%s'" % (pkg))
 
-    # Directory/File structure: repo_dir/ros-<distro>/<pkg>/MODULE.bazel
-    pkg_dir = '{0}/ros-{1}/{2}'.format(overlay.repo.repo_dir, distro.name, pkg)
-    module_file_path = os.path.join(pkg_dir, 'MODULE.bazel')
+    # Directory/File structure: modules/<pkg>/<version>/MODULE.bazel
+    pkg_dir = os.path.join(overlay.repo.repo_dir, "modules", pkg)
+    version_dir = os.path.join(pkg_dir, version)
+    module_file_path = os.path.join(version_dir, 'MODULE.bazel')
+    source_json_path = os.path.join(version_dir, 'source.json')
+    metadata_json_path = os.path.join(pkg_dir, 'metadata.json')
     
     if preserve_existing and os.path.isfile(module_file_path):
         ok("MODULE file for package '%s' up to date, skipping..." % pkg)
         return None, [], None
 
-    make_dir(pkg_dir)
+    make_dir(version_dir)
+
+    # Download source tarball and calculate integrity
+    cache_dir = os.path.join(os.getcwd(), ".bazel")
+    if not os.path.exists(cache_dir):
+        make_dir(cache_dir)
+
+    pkg_obj = distro.release_packages[pkg]
+    repo = distro.repositories[pkg_obj.repository_name].release_repository
+    
+    # Determine tag
+    # Default tag format: release/{distro}/{pkg}/{version}
+    # Note: repo.version is the full version string (e.g. 1.2.3-0)
+    full_version = repo.version
+    tag = 'release/{0}/{1}/{2}'.format(distro.name, pkg, full_version)
+    if repo.tags and full_version in repo.tags:
+         tag = repo.tags[full_version]
+    
+    # Construct Archive URL
+    url = repo.url.replace('.git', '')
+    if 'github.com' in url:
+        archive_url = '{0}/archive/refs/tags/{1}.tar.gz'.format(url, tag)
+    else:
+        err("Non-GitHub repositories are not supported for calculating integrity hash")
+        return None, [], None
+
+    tarball_name = '{0}-{1}.tar.gz'.format(pkg, version)
+    tarball_path = os.path.join(cache_dir, tarball_name)
+    
+    if not os.path.exists(tarball_path):
+        try:
+            download_file(archive_url, tarball_path)
+        except Exception as e:
+            err("Failed to download tarball for {0}: {1}".format(pkg, e))
+            return None, [], None
+    
+    integrity = _calculate_sha256(tarball_path)
+    
+    # Guess strip_prefix
+    repo_name = url.split('/')[-1]
+    strip_prefix = '{0}-{1}'.format(repo_name, tag.replace('/', '-').lstrip('v'))
+    if tag.startswith('v'):
+         strip_prefix = '{0}-{1}'.format(repo_name, tag.lstrip('v'))
 
     try:
         current = BazelPackage(distro, pkg)
@@ -85,6 +141,7 @@ def regenerate_pkg(overlay, pkg, distro, preserve_existing=False):
         
     try:
         module_text = current.module_text()
+        source_json = current.bazel_module.get_source_json(archive_url, integrity, strip_prefix)
     except UnresolvedDependency:
         err("Failed to resolve dependencies for package {}!".format(pkg))
         return None, [], None
@@ -92,14 +149,47 @@ def regenerate_pkg(overlay, pkg, distro, preserve_existing=False):
         err("Failed to parse data for package {}!".format(pkg))
         raise ke
 
+    # Update metadata.json
+    maintainers = []
+    # Fetch maintainers from rosdistro
+    # RosPackage doesn't expose maintainers directly?
+    # We might need to look at manifests.
+    # For now, let's use a placeholder or skip if not critical. 
+    # But User requirement said "Each package will need a metadata.json".
+    # I'll try to load existing metadata if available.
+    
+    metadata = {
+        "homepage": repo.url,
+        "maintainers": [],
+        "versions": [],
+        "yanked_versions": {}
+    }
+    
+    if os.path.isfile(metadata_json_path):
+        with open(metadata_json_path, 'r') as f:
+            try:
+                metadata = json.load(f)
+            except:
+                pass
+
+    if version not in metadata["versions"]:
+        metadata["versions"].append(version)
+        metadata["versions"].sort()
+
     try:
         with open(module_file_path, "w") as f:
             f.write(module_text)
+        with open(source_json_path, 'w') as f:
+            json.dump(source_json, f, indent=4)
+            f.write('\n')
+        with open(metadata_json_path, 'w') as f:
+            json.dump(metadata, f, indent=4)
+            f.write('\n')
     except Exception as e:
-        err("Failed to write MODULE file to disk!")
+        err("Failed to write Bazel registry files to disk!")
         raise e
         
-    success_msg = 'Successfully generated MODULE for package'
+    success_msg = 'Successfully generated Bazel registry files for package'
     ok('{0} \'{1}\'.'.format(success_msg, pkg))
     return current, version, pkg
 

@@ -29,6 +29,11 @@ def get_parser(
             required=require_rosdistro,
             type=str
         )
+        parser.add_argument(
+            '--ros-distro-index',
+            help='index.yaml to use for rosdistro (url or tag)',
+            type=str
+        )
         if not exclude_all:
             parser.add_argument(
                 '--all',
