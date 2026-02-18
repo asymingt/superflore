@@ -160,7 +160,14 @@ def regenerate_pkg(overlay, pkg, distro, preserve_existing=False):
     
     metadata = {
         "homepage": repo.url,
-        "maintainers": [],
+        "maintainers": [
+            {
+                "email": "simmers@intrinsic.ai",
+                "github": "asymingt",
+                "github_user_id": 37671,
+                "name": "Andrew Symington"
+            }
+        ],
         "versions": [],
         "yanked_versions": {}
     }

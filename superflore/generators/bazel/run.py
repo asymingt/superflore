@@ -16,9 +16,15 @@ import os
 import sys
 
 from rosinstall_generator.distro import get_distro
+from rosinstall_generator.distro import get_package_names
 from superflore.exceptions import NoGitHubAuthToken
 from superflore.generate_installers import generate_installers
-from superflore.generators.bazel.bazel_module import DEP_NAME_OVERRIDE
+from superflore.generators.bazel.bazel_module import (
+    DEP_NAME_OVERRIDE,
+    DEP_IGNORES,
+    get_bazel_version,
+    get_copyright_header,
+)
 from superflore.generators.bazel.gen_packages import regenerate_pkg
 from superflore.generators.bazel.overlay_instance import BazelOverlay
 from superflore.parser import get_parser
@@ -32,6 +38,7 @@ from superflore.utils import gen_missing_deps_msg
 from superflore.utils import get_distros_by_status
 from superflore.utils import info
 from superflore.utils import load_pr
+from superflore.utils import make_dir
 from superflore.utils import ok
 from superflore.utils import save_pr
 from superflore.utils import url_to_repo_org
@@ -40,23 +47,23 @@ from superflore.utils import warn
 def main():
     overlay = None
     preserve_existing = True
-    parser = get_parser('Deploy ROS packages into a Bazel workspace')
+    parser = get_parser('Deploy ROS packages into a Bazel workspace', require_rosdistro=True, require_ros_tag_date=True)
     args = parser.parse_args(sys.argv[1:])
+    ########################################################################################
     # TODO(asymingt) - this in principle should work correctly. However, there is a bug with
     # release tags, and how they incorrectly use a distribution cache.
-    if args.ros_distro_index:
-        if args.ros_distro_index.startswith('http'):
-            os.environ['ROSDISTRO_INDEX_URL'] = args.ros_distro_index
-        else:
-            # Assume it's a tag/branch of ros/rosdistro
-            url = 'https://raw.githubusercontent.com/ros/rosdistro/{0}/index-v4.yaml'.format(
-                args.ros_distro_index
-            )
-            os.environ['ROSDISTRO_INDEX_URL'] = url
-            info('Using rosdistro index: {0}'.format(url))
+    # See: https://github.com/asymingt/rosdistro/blob/rolling-bazel/.github/workflows/preserve_cache.yaml
+    url = 'https://github.com/asymingt/rosdistro/releases/download/{0}/{1}/index-v4.yaml'.format(
+        args.ros_distro,
+        args.ros_tag_date
+    )
+    info('Using rosdistro index: {0}'.format(url))
+    os.environ['ROSDISTRO_INDEX_URL'] = url
+    ########################################################################################
     pr_comment = args.pr_comment
     skip_keys = args.skip_keys or []
     skip_keys.extend(DEP_NAME_OVERRIDE.keys())
+    skip_keys.extend(DEP_IGNORES)
     selected_targets = None
     if not args.dry_run:
         if 'SUPERFLORE_GITHUB_TOKEN' not in os.environ:
@@ -181,9 +188,10 @@ def main():
             sys.exit(0)
 
         for distro in selected_targets:
+            distro_obj = get_distro(distro)
             distro_installers, distro_broken, distro_changes =\
                 generate_installers(
-                    get_distro(distro),
+                    distro_obj,
                     overlay=overlay,
                     gen_pkg_func=regenerate_pkg,
                     preserve_existing=preserve_existing,
@@ -195,6 +203,94 @@ def main():
 
             total_changes[distro] = distro_changes
             total_installers[distro] = distro_installers
+
+            # Generate release files
+            release_dir = os.path.join(
+                overlay.repo.repo_dir, "releases", distro, args.ros_tag_date
+            )
+            make_dir(release_dir)
+
+            module_content =  get_copyright_header() + "\n"
+
+            pkg_names = get_package_names(distro_obj)[0]
+            for pkg in sorted(pkg_names):
+                if pkg in skip_keys or pkg in DEP_IGNORES:
+                    continue
+
+                if pkg in DEP_NAME_OVERRIDE:
+                    module_content += DEP_NAME_OVERRIDE[pkg] + '\n'
+                    continue
+
+                try:
+                    version = get_bazel_version(distro_obj, pkg)
+                    module_content += 'bazel_dep(name = "{0}", version = "{1}")\n'.format(
+                        pkg, version
+                    )
+                except Exception as e:
+                    warn("Failed to get version for package %s: %s" % (pkg, e))
+
+            with open(os.path.join(release_dir, "MODULE.bazel"), "w") as f:
+                f.write(module_content)
+
+            with open(os.path.join(release_dir, ".bazelversion"), "w") as f:
+                f.write("8.5.1")
+
+            with open(os.path.join(release_dir, ".bazelrc"), "w") as f:
+                f.write(get_copyright_header())
+                f.write("""
+# Augment the BCR with a few of our own modules in the docs folder.
+common --registry=https://intrinsic-opensource.github.io/ros-central-registry \\
+       --registry=https://bcr.bazel.build
+
+# Define ROS_HOME so that tests don't try and write to ~/.ros_home by default.
+common --test_env=ROS_HOME=".ros"
+
+# Force Bazel to stop producing implicit __init__.py files in Python. This
+# is so that we can use PEP420 namespace package feature for IDL generation.
+common --incompatible_default_to_explicit_init_py
+
+# Force Bazel to use an environment with a static value for PATH, and not to
+# use the LD_LIBRARY_PATH. This makes builds robust to terminal refreshes.
+common --incompatible_strict_action_env
+
+# Don't allow tests to access the network by default.
+test --sandbox_default_allow_network=false
+
+# Use C++17 standard by default across the whole repo.
+build --cxxopt="-std=c++17"
+
+# Ensure that we use toolchains_llvm instead of the host toolchain.
+build --action_env="BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1"
+
+# Build configuration for RMW implementations.
+#   --@rmw_implementation//:rmw=rmw_cyclonedds_cpp
+#   --@rmw_implementation//:rmw=rmw_fastrtps_cpp
+#   --@rmw_implementation//:rmw=rmw_fastrtps_dynamic_cpp
+#   --@rmw_implementation//:rmw=rmw_zenoh_cpp
+build --@rmw_implementation//:rmw=rmw_fastrtps_cpp
+
+# ASAN
+build:asan --strip=never
+build:asan --copt=-fsanitize=address
+build:asan --copt=-O0
+build:asan --copt=-fno-omit-frame-pointer
+build:asan --linkopt=-fsanitize=address
+
+# MSAN
+build:msan --strip=never
+build:msan --copt=-fsanitize=memory
+build:msan --copt=-O0
+build:msan --copt=-fno-omit-frame-pointer
+build:msan --linkopt=-fsanitize=memory
+
+# TSAN
+build:tsan --strip=never
+build:tsan --copt=-fsanitize=thread
+build:tsan --copt=-O0
+build:tsan --copt=-fno-omit-frame-pointer
+build:tsan --linkopt=-fsanitize=thread
+""")
+            distro_changes.append("Generated release artifacts for %s" % release_dir)
 
         num_changes = 0
         for distro_name in total_changes:

@@ -19,20 +19,22 @@ import argparse
 def get_parser(
     tool_tip, is_generator=True, exclude_all=False,
     require_dryrun=False,
-    require_rosdistro=False
+    require_rosdistro=False,
+    require_ros_tag_date=False
 ):
     parser = argparse.ArgumentParser(description=tool_tip)
     if is_generator:
         parser.add_argument(
             '--ros-distro',
-            help='regenerate packages for the specified distro',
+            help='regenerate packages for the specified distro (eg, rolling)',
             required=require_rosdistro,
             type=str
         )
         parser.add_argument(
-            '--ros-distro-index',
-            help='index.yaml to use for rosdistro (url or tag)',
-            type=str
+            '--ros-tag-date',
+            help='tag to use for rosdistro (eg, 2025-12-04)',
+            required=require_ros_tag_date,
+            type=str,
         )
         if not exclude_all:
             parser.add_argument(
