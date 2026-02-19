@@ -211,7 +211,19 @@ def main():
             make_dir(release_dir)
 
             module_content =  get_copyright_header() + "\n"
+            module_content += """# Every ROS workspace must declare itself as a module.
+module(
+    name = "example_ros_workspace",
+    version = "0.0.1",
+)
 
+# BCR deps
+bazel_dep(name = "rules_cc", version = "0.2.16")
+bazel_dep(name = "rules_python", version = "1.8.3")
+bazel_dep(name = "toolchains_llvm", version = "1.6.0")
+
+# RCR deps
+"""
             pkg_names = get_package_names(distro_obj)[0]
             for pkg in sorted(pkg_names):
                 if pkg in skip_keys or pkg in DEP_IGNORES:
@@ -228,6 +240,26 @@ def main():
                     )
                 except Exception as e:
                     warn("Failed to get version for package %s: %s" % (pkg, e))
+
+            module_content += """
+# A lot of the tooling for IDL generation requires a Python 3.12 toolchain
+# to work. You need to configure your workspace correctly to provide one.
+
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+python.toolchain(
+    python_version = "3.12",
+    is_default = True,
+)
+
+# Having a self-contained C++ toolchain prevents bazel from polling PATH
+# for a compiler, making the builds less reliant on the host environment.
+
+llvm = use_extension("@toolchains_llvm//toolchain/extensions:llvm.bzl", "llvm")
+llvm.toolchain(llvm_version = "20.1.7")
+use_repo(llvm, "llvm_toolchain")
+
+register_toolchains("@llvm_toolchain//:all")
+"""
 
             with open(os.path.join(release_dir, "MODULE.bazel"), "w") as f:
                 f.write(module_content)
