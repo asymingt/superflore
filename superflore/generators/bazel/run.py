@@ -168,7 +168,10 @@ def main():
                 err("No packages generated successfully, exiting.")
                 sys.exit(1)
             # Commit changes and file pull request
-            overlay.commit_changes(args.ros_distro)
+            if args.no_commit:
+                info('Skipping commit (--no-commit), changes left unstaged')
+            else:
+                overlay.commit_changes(args.ros_distro)
             delta = "Regenerated: '%s'\n" % args.only
             if args.dry_run:
                 save_pr(
@@ -339,7 +342,10 @@ build:tsan --linkopt=-fsanitize=thread
         missing_deps = gen_missing_deps_msg(total_broken)
 
         # Commit changes and file pull request
-        overlay.commit_changes('all' if args.all else args.ros_distro)
+        if args.no_commit:
+            info('Skipping commit (--no-commit), changes left unstaged')
+        else:
+            overlay.commit_changes('all' if args.all else args.ros_distro)
 
         if args.dry_run:
             info('Running in dry mode, not filing PR')

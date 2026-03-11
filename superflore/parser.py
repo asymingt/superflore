@@ -59,6 +59,11 @@ def get_parser(
             action='store_true'
         )
         parser.add_argument(
+            '--no-commit',
+            help='Leave changes in the working directory unstaged',
+            action='store_true'
+        )
+        parser.add_argument(
             '--output-repository-path',
             help='location of the Git repo',
             type=str
