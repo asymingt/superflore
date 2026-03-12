@@ -265,6 +265,10 @@ llvm.toolchain(llvm_version = "20.1.7")
 use_repo(llvm, "llvm_toolchain")
 
 register_toolchains("@llvm_toolchain//:all")
+
+# Uncomment when writing release patches.
+# include("//:dev.MODULE.bazel")
+
 """
 
             with open(os.path.join(release_dir, "MODULE.bazel"), "w") as f:

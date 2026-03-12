@@ -55,6 +55,7 @@ DEP_NAME_OVERRIDE = {
     'liblz4_vendor': 'bazel_dep(name = "lz4", version = "1.10.0.bcr.1")',
     'libyaml_vendor': 'bazel_dep(name = "libyaml", version = "0.2.5")',
     'lz4_vendor': 'bazel_dep(name = "lz4", version = "1.10.0.bcr.1")',
+    'magic_enum': 'bazel_dep(name = "magic_enum", version = "0.9.7")',
     'mcap_vendor': 'bazel_dep(name = "mcap", version = "2.0.2")',
     'mimick_vendor': 'bazel_dep(name = "mimick", version = "0.9.0")',
     'mp_units_vendor': 'bazel_dep(name = "mp-units", version = "2.5.0.bcr.0")',
@@ -64,6 +65,7 @@ DEP_NAME_OVERRIDE = {
     'sqlite3_vendor': 'bazel_dep(name = "sqlite3", version = "3.51.2")',
     'tinyxml_vendor': 'bazel_dep(name = "tinyxml", version = "2.6.2.bcr.1")',
     'tinyxml2_vendor': 'bazel_dep(name = "tinyxml2", version = "10.0.0")',
+    'xacro': 'bazel_dep(name = "xacro", version = "2.0.12")',
     'yaml_cpp_vendor': 'bazel_dep(name = "yaml-cpp", version = "0.9.0")',
     'zenoh_cpp_vendor': 'bazel_dep(name = "zenoh-cpp", version = "1.7.2")',
     'zstd_vendor': 'bazel_dep(name = "zstd", version = "1.5.7.bcr.1")',
@@ -168,7 +170,7 @@ class BazelModule(object):
         return ret
 
 
-    def get_source_json(self, url, integrity, strip_prefix, overlay=None):
+    def get_source_json(self, url, integrity, strip_prefix, overlay=None, patches=None, patch_cmds=None):
         result = {
             "integrity": integrity,
             "url": url,
@@ -176,4 +178,9 @@ class BazelModule(object):
         }
         if overlay:
             result["overlay"] = overlay
+        if patches:
+            result["patches"] = patches
+            result["patch_strip"] = 1
+        if patch_cmds:
+            result["patch_cmds"] = patch_cmds
         return result

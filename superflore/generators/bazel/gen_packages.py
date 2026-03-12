@@ -13,9 +13,11 @@
 # limitations under the License.
 
 import base64
+import fnmatch
 import hashlib
 import json
 import os
+import tarfile
 from rosdistro.dependency_walker import DependencyWalker
 from rosdistro.rosdistro import RosPackage
 from rosinstall_generator.distro import get_package_names
@@ -74,6 +76,64 @@ def _calculate_sha256_from_string(content):
     sha256_hash = hashlib.sha256(content.encode('utf-8'))
     return "sha256-" + base64.b64encode(sha256_hash.digest()).decode()
 
+# Bazel file patterns to remove from source archives
+_BAZEL_FILE_PATTERNS = ['*.bzl', '*.bazel', 'BUILD', 'WORKSPACE']
+
+def _find_bazel_files_in_tarball(tarball_path, strip_prefix):
+    """List all Bazel-related files inside a tarball, returning paths relative
+    to the stripped root (i.e. after strip_prefix is removed)."""
+    bazel_files = []
+    with tarfile.open(tarball_path, 'r:gz') as tar:
+        for member in tar.getmembers():
+            if not member.isfile():
+                continue
+            # Strip the prefix from the path
+            if strip_prefix and member.name.startswith(strip_prefix + '/'):
+                rel_path = member.name[len(strip_prefix) + 1:]
+            else:
+                rel_path = member.name
+            # Check if the file basename matches any Bazel pattern
+            basename = os.path.basename(rel_path)
+            for pattern in _BAZEL_FILE_PATTERNS:
+                if fnmatch.fnmatch(basename, pattern):
+                    bazel_files.append(rel_path)
+                    break
+    return sorted(bazel_files)
+
+def _generate_delete_patch(tarball_path, strip_prefix, bazel_files):
+    """Generate a unified diff patch that deletes the given files.
+    Uses the system 'diff' command for maximum compatibility."""
+    import tempfile
+    import shutil
+    import subprocess
+    patch_text = ""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with tarfile.open(tarball_path, 'r:gz') as tar:
+            for rel_path in bazel_files:
+                if strip_prefix:
+                    full_path = strip_prefix + '/' + rel_path
+                else:
+                    full_path = rel_path
+                try:
+                    # Extract the single file to our temporary directory to diff it
+                    tar.extract(full_path, path=tmpdir)
+                except KeyError:
+                    continue
+                
+                extracted_path = os.path.join(tmpdir, full_path)
+                # Generate a deletion patch: diff the file against /dev/null
+                # We use --label to match the expected 'a/file' and '/dev/null' format
+                res = subprocess.run([
+                    'diff', '-u',
+                    '--label', 'a/{0}'.format(rel_path),
+                    '--label', '/dev/null',
+                    extracted_path, '/dev/null'
+                ], capture_output=True, text=True)
+                
+                if res.stdout:
+                    patch_text += res.stdout
+    return patch_text if patch_text else None
+
 def regenerate_pkg(overlay, pkg, distro, preserve_existing=False):
     version = get_bazel_version(distro, pkg)
     pkg_names = get_package_names(distro)[0]
@@ -97,6 +157,10 @@ def regenerate_pkg(overlay, pkg, distro, preserve_existing=False):
     # Create overlay directory for BUILD.bazel
     overlay_dir = os.path.join(version_dir, 'overlay')
     make_dir(overlay_dir)
+
+    # Create patches directory
+    patches_dir = os.path.join(version_dir, 'patches')
+    make_dir(patches_dir)
 
     # Download source tarball and calculate integrity
     cache_dir = os.path.join(os.getcwd(), ".bazel")
@@ -137,7 +201,7 @@ def regenerate_pkg(overlay, pkg, distro, preserve_existing=False):
     # Guess strip_prefix
     repo_name = url.split('/')[-1]
     strip_prefix = '{0}-{1}'.format(repo_name, tag.replace('/', '-').lstrip('v'))
-    if strip_prefix.startswith("rsl-release"):
+    if strip_prefix.startswith("RSL-release-"):
         strip_prefix = strip_prefix.lower()
     if tag.startswith('v'):
          strip_prefix = '{0}-{1}'.format(repo_name, tag.lstrip('v'))
@@ -148,16 +212,23 @@ def regenerate_pkg(overlay, pkg, distro, preserve_existing=False):
         err('Failed to generate MODULE for package {}!'.format(pkg))
         raise e
         
-    # Generate overlay BUILD.bazel content (copyright header only)
+    # Generate overlay BUILD.bazel content (copyright header only for now)
     build_bazel_content = get_copyright_header()
     build_bazel_integrity = _calculate_sha256_from_string(build_bazel_content)
     build_overlay = {
         "BUILD.bazel": build_bazel_integrity
     }
 
+    # Scan tarball for Bazel files and generate a deletion command
+    patch_cmds = []
+    bazel_files = _find_bazel_files_in_tarball(tarball_path, strip_prefix)
+    if bazel_files:
+        patch_cmds = ["rm -rf " + " ".join(bazel_files)]
+
     try:
         module_text = current.module_text()
-        source_json = current.bazel_module.get_source_json(archive_url, integrity, strip_prefix, build_overlay)
+        source_json = current.bazel_module.get_source_json(
+            archive_url, integrity, strip_prefix, build_overlay, None, patch_cmds)
     except UnresolvedDependency:
         err("Failed to resolve dependencies for package {}!".format(pkg))
         return None, [], None
