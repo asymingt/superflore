@@ -219,16 +219,21 @@ def regenerate_pkg(overlay, pkg, distro, preserve_existing=False):
         "BUILD.bazel": build_bazel_integrity
     }
 
-    # Scan tarball for Bazel files and generate a deletion command
-    patch_cmds = []
+    # Scan tarball for Bazel files and create empty overlays
     bazel_files = _find_bazel_files_in_tarball(tarball_path, strip_prefix)
-    if bazel_files:
-        patch_cmds = ["rm -rf " + " ".join(bazel_files)]
+    for bazel_file in bazel_files:
+        # Create empty file in overlay
+        overlay_file_path = os.path.join(overlay_dir, bazel_file)
+        make_dir(os.path.dirname(overlay_file_path))
+        with open(overlay_file_path, 'w') as f:
+            f.write('')
+        # Add to build_overlay
+        build_overlay[bazel_file] = _calculate_sha256_from_string('')
 
     try:
         module_text = current.module_text()
         source_json = current.bazel_module.get_source_json(
-            archive_url, integrity, strip_prefix, build_overlay, None, patch_cmds)
+            archive_url, integrity, strip_prefix, build_overlay, None, None)
     except UnresolvedDependency:
         err("Failed to resolve dependencies for package {}!".format(pkg))
         return None, [], None

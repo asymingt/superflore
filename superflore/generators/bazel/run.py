@@ -218,8 +218,8 @@ def main():
             module_content =  get_copyright_header() + "\n"
             module_content += """# Every ROS workspace must declare itself as a module.
 module(
-    name = "example_ros_workspace",
-    version = "0.0.1",
+    name = "{name}",
+    version = "{version}",
 )
 
 # BCR deps
@@ -227,7 +227,7 @@ module(
 bazel_dep(name = "toolchains_llvm", version = "1.6.0")
 
 # RCR deps
-""".format(bcr_deps="\n".join(DEFAULT_DEPS))
+""".format(name=args.ros_distro, version=args.ros_tag_date, bcr_deps="\n".join(DEFAULT_DEPS))
             pkg_names = get_package_names(distro_obj)[0]
             distribution_modules = []
             for pkg in sorted(pkg_names):
