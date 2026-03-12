@@ -16,15 +16,15 @@ from datetime import date
 from superflore.utils import get_pkg_version
 
 DEFAULT_DEPS = [
+    'bazel_dep(name = "aspect_rules_py", version = "1.9.1")',
     'bazel_dep(name = "bazel_skylib", version = "1.9.0")',
-    'bazel_dep(name = "cmake_configure_file", version = "0.1.3")',
-    'bazel_dep(name = "google_benchmark", version = "1.9.4")',
-    'bazel_dep(name = "googletest", version = "1.17.0.bcr.2")',
+    'bazel_dep(name = "cmake_configure_file", version = "0.1.6")',
     'bazel_dep(name = "platforms", version = "1.0.0")',
-    'bazel_dep(name = "protobuf", version = "33.4")',
-    'bazel_dep(name = "rules_cc", version = "0.2.16")',
-    'bazel_dep(name = "rules_python", version = "1.8.3")',
-    'bazel_dep(name = "rules_rust", version = "0.68.1")',
+    'bazel_dep(name = "protobuf", version = "34.0.bcr.1")',
+    'bazel_dep(name = "rules_cc", version = "0.2.17")',
+    'bazel_dep(name = "rules_python", version = "1.9.0")',
+    'bazel_dep(name = "rules_rs", version = "0.0.43")',
+    'bazel_dep(name = "rules_rust", version = "0.69.0")',
     'bazel_dep(name = "rules_shell", version = "0.6.1")',
 ]
 
@@ -33,8 +33,8 @@ DEFAULT_DEPS = [
 DEP_NAME_OVERRIDE = {
     'aws_sdk_vendor': 'bazel_dep(name = "aws_sdk", version = "1.11.321.bcr.0")',
     'console_bridge_vendor': 'bazel_dep(name = "console_bridge", version = "1.0.1")',
-    'fastcdr': 'bazel_dep(name = "fastcdr", version = "2.3.0")',
-    'fastdds': 'bazel_dep(name = "fastdds", version = "3.2.2")',
+    'fastcdr': 'bazel_dep(name = "fastcdr", version = "2.3.5.bcr.0")',
+    'fastdds': 'bazel_dep(name = "fastdds", version = "3.4.2")',
     'gmock_vendor': 'bazel_dep(name = "googletest", version = "1.17.0.bcr.2")',
     'google_benchmark_vendor': 'bazel_dep(name = "google_benchmark", version = "1.9.4")',
     'gtest_vendor': 'bazel_dep(name = "googletest", version = "1.17.0.bcr.2")',
@@ -168,9 +168,12 @@ class BazelModule(object):
         return ret
 
 
-    def get_source_json(self, url, integrity, strip_prefix):
-        return {
+    def get_source_json(self, url, integrity, strip_prefix, overlay=None):
+        result = {
             "integrity": integrity,
             "url": url,
             "strip_prefix": strip_prefix,
         }
+        if overlay:
+            result["overlay"] = overlay
+        return result

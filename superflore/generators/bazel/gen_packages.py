@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import base64
 import hashlib
 import json
 import os
@@ -29,6 +30,9 @@ from superflore.utils import ok
 from superflore.utils import retry_on_exception
 from superflore.utils import url_to_repo_org
 from superflore.utils import warn
+from superflore.generators.bazel.bazel_module import BazelModule
+from superflore.generators.bazel.bazel_module import get_bazel_version
+from superflore.generators.bazel.bazel_module import get_copyright_header
 
 org = "Open Source Robotics Foundation"
 org_license = "BSD"
@@ -59,17 +63,16 @@ def _package_condition_context(rosdistro_name):
         'ROS_PYTHON_VERSION': ros_python_version
     }
 
-
-
-from superflore.generators.bazel.bazel_module import BazelModule
-from superflore.generators.bazel.bazel_module import get_bazel_version
-
 def _calculate_sha256(file_path):
     sha256_hash = hashlib.sha256()
     with open(file_path, "rb") as f:
         for byte_block in iter(lambda: f.read(4096), b""):
             sha256_hash.update(byte_block)
-    return "sha256-" + sha256_hash.hexdigest()
+    return "sha256-" + base64.b64encode(sha256_hash.digest()).decode()
+
+def _calculate_sha256_from_string(content):
+    sha256_hash = hashlib.sha256(content.encode('utf-8'))
+    return "sha256-" + base64.b64encode(sha256_hash.digest()).decode()
 
 def regenerate_pkg(overlay, pkg, distro, preserve_existing=False):
     version = get_bazel_version(distro, pkg)
@@ -90,6 +93,10 @@ def regenerate_pkg(overlay, pkg, distro, preserve_existing=False):
         return None, [], None
 
     make_dir(version_dir)
+
+    # Create overlay directory for BUILD.bazel
+    overlay_dir = os.path.join(version_dir, 'overlay')
+    make_dir(overlay_dir)
 
     # Download source tarball and calculate integrity
     cache_dir = os.path.join(os.getcwd(), ".bazel")
@@ -130,6 +137,8 @@ def regenerate_pkg(overlay, pkg, distro, preserve_existing=False):
     # Guess strip_prefix
     repo_name = url.split('/')[-1]
     strip_prefix = '{0}-{1}'.format(repo_name, tag.replace('/', '-').lstrip('v'))
+    if strip_prefix.startswith("rsl-release"):
+        strip_prefix = strip_prefix.lower()
     if tag.startswith('v'):
          strip_prefix = '{0}-{1}'.format(repo_name, tag.lstrip('v'))
 
@@ -139,9 +148,16 @@ def regenerate_pkg(overlay, pkg, distro, preserve_existing=False):
         err('Failed to generate MODULE for package {}!'.format(pkg))
         raise e
         
+    # Generate overlay BUILD.bazel content (copyright header only)
+    build_bazel_content = get_copyright_header()
+    build_bazel_integrity = _calculate_sha256_from_string(build_bazel_content)
+    build_overlay = {
+        "BUILD.bazel": build_bazel_integrity
+    }
+
     try:
         module_text = current.module_text()
-        source_json = current.bazel_module.get_source_json(archive_url, integrity, strip_prefix)
+        source_json = current.bazel_module.get_source_json(archive_url, integrity, strip_prefix, build_overlay)
     except UnresolvedDependency:
         err("Failed to resolve dependencies for package {}!".format(pkg))
         return None, [], None
@@ -192,6 +208,10 @@ def regenerate_pkg(overlay, pkg, distro, preserve_existing=False):
         with open(metadata_json_path, 'w') as f:
             json.dump(metadata, f, indent=4)
             f.write('\n')
+        # Write overlay BUILD.bazel
+        overlay_build_path = os.path.join(overlay_dir, 'BUILD.bazel')
+        with open(overlay_build_path, 'w') as f:
+            f.write(build_bazel_content)
     except Exception as e:
         err("Failed to write Bazel registry files to disk!")
         raise e

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import re
 import sys
 
 from rosinstall_generator.distro import get_distro
@@ -20,6 +21,7 @@ from rosinstall_generator.distro import get_package_names
 from superflore.exceptions import NoGitHubAuthToken
 from superflore.generate_installers import generate_installers
 from superflore.generators.bazel.bazel_module import (
+    DEFAULT_DEPS,
     DEP_NAME_OVERRIDE,
     DEP_IGNORES,
     get_bazel_version,
@@ -221,13 +223,13 @@ module(
 )
 
 # BCR deps
-bazel_dep(name = "rules_cc", version = "0.2.16")
-bazel_dep(name = "rules_python", version = "1.8.3")
+{bcr_deps}
 bazel_dep(name = "toolchains_llvm", version = "1.6.0")
 
 # RCR deps
-"""
+""".format(bcr_deps="\n".join(DEFAULT_DEPS))
             pkg_names = get_package_names(distro_obj)[0]
+            distribution_modules = []
             for pkg in sorted(pkg_names):
                 if pkg in skip_keys or pkg in DEP_IGNORES:
                     continue
@@ -241,6 +243,7 @@ bazel_dep(name = "toolchains_llvm", version = "1.6.0")
                     module_content += 'bazel_dep(name = "{0}", version = "{1}")\n'.format(
                         pkg, version
                     )
+                    distribution_modules.append(pkg)
                 except Exception as e:
                     warn("Failed to get version for package %s: %s" % (pkg, e))
 
@@ -250,7 +253,7 @@ bazel_dep(name = "toolchains_llvm", version = "1.6.0")
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
 python.toolchain(
-    python_version = "3.12",
+    python_version = "3.11",
     is_default = True,
 )
 
@@ -267,15 +270,25 @@ register_toolchains("@llvm_toolchain//:all")
             with open(os.path.join(release_dir, "MODULE.bazel"), "w") as f:
                 f.write(module_content)
 
+            with open(os.path.join(release_dir, "BUILD.bazel"), "w") as f:
+                f.write(get_copyright_header())
+
             with open(os.path.join(release_dir, ".bazelversion"), "w") as f:
-                f.write("8.5.1")
+                f.write("9.0.0")
+
+            with open(os.path.join(release_dir, ".bazelignore"), "w") as f:
+                f.write("vanilla\n")
 
             with open(os.path.join(release_dir, ".bazelrc"), "w") as f:
                 f.write(get_copyright_header())
                 f.write("""
 # Augment the BCR with a few of our own modules in the docs folder.
-common --registry=https://intrinsic-opensource.github.io/ros-central-registry \\
-       --registry=https://bcr.bazel.build
+common --registry=file://%workspace%/../../..        --registry=https://bcr.bazel.build
+
+# Remote cache.
+common --remote_cache=https://storage.googleapis.com/intrinsic-opensource-buildcache
+common --remote_upload_local_results=false
+common --remote_cache_compression=true
 
 # Define ROS_HOME so that tests don't try and write to ~/.ros_home by default.
 common --test_env=ROS_HOME=".ros"
@@ -288,8 +301,9 @@ common --incompatible_default_to_explicit_init_py
 # use the LD_LIBRARY_PATH. This makes builds robust to terminal refreshes.
 common --incompatible_strict_action_env
 
-# Don't allow tests to access the network by default.
-test --sandbox_default_allow_network=false
+# The zenoh tests must be allowed to contact the network to communicate with
+# the zenohd router, or else they will fail.
+test --sandbox_default_allow_network=true
 
 # Use C++17 standard by default across the whole repo.
 build --cxxopt="-std=c++17"
@@ -297,12 +311,8 @@ build --cxxopt="-std=c++17"
 # Ensure that we use toolchains_llvm instead of the host toolchain.
 build --action_env="BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1"
 
-# Build configuration for RMW implementations.
-#   --@rmw_implementation//:rmw=rmw_cyclonedds_cpp
-#   --@rmw_implementation//:rmw=rmw_fastrtps_cpp
-#   --@rmw_implementation//:rmw=rmw_fastrtps_dynamic_cpp
-#   --@rmw_implementation//:rmw=rmw_zenoh_cpp
-build --@rmw_implementation//:rmw=rmw_fastrtps_cpp
+# Tell Bazel to use the pre-compiled binary instead of building from source
+build --@protobuf//bazel/toolchains:prefer_prebuilt_protoc
 
 # ASAN
 build:asan --strip=never
@@ -324,7 +334,62 @@ build:tsan --copt=-fsanitize=thread
 build:tsan --copt=-O0
 build:tsan --copt=-fno-omit-frame-pointer
 build:tsan --linkopt=-fsanitize=thread
+
+# Allow for local testing of distribution.
+common:distribution --target_pattern_file=distribution.txt
+
+# Vendoring for development
 """)
+                # Write vendor stanza with --repo for each module
+                if distribution_modules:
+                    vendor_lines = ['vendor --vendor_dir=vendor']
+                    for mod in distribution_modules:
+                        vendor_lines.append('    --repo=@{0}'.format(mod))
+                    # Join with ' \\\n' for line continuation, except the last line
+                    f.write(' \\\n'.join(vendor_lines))
+                    f.write('\n')
+
+            with open(os.path.join(release_dir, "distribution.txt"), "w") as f:
+                for mod in distribution_modules:
+                    f.write("@{0}//...\n".format(mod))
+
+            with open(os.path.join(release_dir, "dev.MODULE.bazel"), "w") as f:
+                f.write(get_copyright_header())
+                for mod in distribution_modules:
+                    f.write('local_path_override(\n')
+                    f.write('    module_name = "{0}",\n'.format(mod))
+                    f.write('    path = "./vendor/{0}+",\n'.format(mod))
+                    f.write(')\n')
+
+            # Generate vendor/VENDOR.bazel with ignore() for all BCR deps
+            vendor_dir = os.path.join(release_dir, "vendor")
+            make_dir(vendor_dir)
+            bcr_names = set(['toolchains_llvm'])
+            for dep in DEFAULT_DEPS:
+                m = re.search(r'name\s*=\s*"([^"]+)"', dep)
+                if m:
+                    bcr_names.add(m.group(1))
+            for dep_str in DEP_NAME_OVERRIDE.values():
+                m = re.search(r'name\s*=\s*"([^"]+)"', dep_str)
+                if m:
+                    bcr_names.add(m.group(1))
+            with open(os.path.join(vendor_dir, "VENDOR.bazel"), "w") as f:
+                f.write('###############################################################################\n')
+                f.write('# This file is used to configure how external repositories are handled in vendor mode.\n')
+                f.write('# ONLY the two following functions can be used:\n')
+                f.write('#\n')
+                f.write("# ignore('@@<canonical repo name>', ...) is used to completely ignore this repo from vendoring.\n")
+                f.write('# Bazel will use the normal external cache and fetch process for this repo.\n')
+                f.write('#\n')
+                f.write("# pin('@@<canonical repo name>', ...) is used to pin the contents of this repo under the vendor\n")
+                f.write('# directory as if there is a --override_repository flag for this repo.\n')
+                f.write('# Note that Bazel will NOT update the vendored source for this repo while running vendor command\n')
+                f.write("# unless it's unpinned. The user can modify and maintain the vendored source for this repo manually.\n")
+                f.write('###############################################################################\n')
+                f.write('\n')
+                for name in sorted(bcr_names):
+                    f.write('ignore("@@{0}")\n'.format(name))
+
             distro_changes.append("Generated release artifacts for %s" % release_dir)
 
         num_changes = 0
