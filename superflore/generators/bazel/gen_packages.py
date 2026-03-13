@@ -308,19 +308,25 @@ class BazelPackage(object):
         package_condition_context = _package_condition_context(distro.name)
         walker = DependencyWalker(distro, evaluate_condition_context=package_condition_context)
         
+        exec_deps = walker.get_depends(pkg_name, "exec")
         build_deps = walker.get_depends(pkg_name, "build")
+        buildtool_deps = walker.get_depends(pkg_name, "buildtool")
+        build_export_deps = walker.get_depends(pkg_name, "build_export")
+        buildtool_export_deps = walker.get_depends(pkg_name, "buildtool_export")
         run_deps = walker.get_depends(pkg_name, "run")
         test_deps = walker.get_depends(pkg_name, "test")
         
+        all_deps = set(exec_deps) \
+                 | set(build_deps) \
+                 | set(buildtool_deps) \
+                 | set(build_export_deps) \
+                 | set(buildtool_export_deps) \
+                 | set(run_deps) \
+                 | set(test_deps)
+        
         pkg_names = get_package_names(distro)[0]
 
-        for dep in build_deps:
-            self.bazel_module.add_depend(dep, dep in pkg_names)
-            
-        for dep in run_deps:
-            self.bazel_module.add_depend(dep, dep in pkg_names)
-            
-        for dep in test_deps:
+        for dep in all_deps:
             self.bazel_module.add_depend(dep, dep in pkg_names)
 
     def module_text(self):
