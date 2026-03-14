@@ -15,6 +15,12 @@
 import os
 import re
 import sys
+import json
+import tempfile
+import subprocess
+import urllib.request
+from superflore.utils import download_file
+from superflore.generators.bazel.gen_packages import _calculate_sha256
 
 from rosinstall_generator.distro import get_distro
 from rosinstall_generator.distro import get_package_names
@@ -148,10 +154,12 @@ def main():
                     continue
                 info("Regenerating package '%s'..." % pkg)
                 try:
+                    d_obj = get_distro(args.ros_distro)
+                    d_obj.ros_tag_date = args.ros_tag_date
                     current, current_info, pkg = regenerate_pkg(
                         overlay,
                         pkg,
-                        get_distro(args.ros_distro),
+                        d_obj,
                         preserve_existing
                     )
                     if not current:
@@ -194,6 +202,7 @@ def main():
 
         for distro in selected_targets:
             distro_obj = get_distro(distro)
+            distro_obj.ros_tag_date = args.ros_tag_date
             distro_installers, distro_broken, distro_changes =\
                 generate_installers(
                     distro_obj,
@@ -209,25 +218,91 @@ def main():
             total_changes[distro] = distro_changes
             total_installers[distro] = distro_installers
 
-            # Generate release files
-            release_dir = os.path.join(
-                overlay.repo.repo_dir, "releases", distro, args.ros_tag_date
-            )
-            make_dir(release_dir)
+            # Generate rosdistro module
+            rosdistro_module_name = "rosdistro"
+            rosdistro_version = "{0}.{1}".format(distro, args.ros_tag_date)
+            rosdistro_pkg_dir = os.path.join(overlay.repo.repo_dir, "modules", rosdistro_module_name)
+            rosdistro_version_dir = os.path.join(rosdistro_pkg_dir, rosdistro_version)
+            make_dir(rosdistro_version_dir)
 
-            module_content =  get_copyright_header() + "\n"
-            module_content += """# Every ROS workspace must declare itself as a module.
-module(
-    name = "{name}",
-    version = "{version}",
-)
+            rosdistro_url = "https://github.com/ros/rosdistro/archive/refs/tags/{0}/{1}.tar.gz".format(distro, args.ros_tag_date)
+            
+            with tempfile.NamedTemporaryFile(suffix=".tar.gz") as tmpf:
+                download_file(rosdistro_url, tmpf.name)
+                rosdistro_integrity = _calculate_sha256(tmpf.name)
+            
+            rosdistro_strip_prefix = "rosdistro-{0}-{1}".format(distro, args.ros_tag_date)
+            rosdistro_source_json = {
+                "url": rosdistro_url,
+                "integrity": rosdistro_integrity,
+                "strip_prefix": rosdistro_strip_prefix
+            }
+            with open(os.path.join(rosdistro_version_dir, "source.json"), "w") as f:
+                json.dump(rosdistro_source_json, f, indent=4)
+                f.write("\n")
+                
+            rosdistro_metadata_path = os.path.join(rosdistro_pkg_dir, "metadata.json")
+            rosdistro_metadata = {"versions": []}
+            if os.path.exists(rosdistro_metadata_path):
+                with open(rosdistro_metadata_path, 'r') as f:
+                    rosdistro_metadata = json.load(f)
+            if rosdistro_version not in rosdistro_metadata["versions"]:
+                rosdistro_metadata["versions"].append(rosdistro_version)
+                rosdistro_metadata["versions"].sort()
+            with open(rosdistro_metadata_path, "w") as f:
+                json.dump(rosdistro_metadata, f, indent=4)
+                f.write("\n")
+                
+            rosdistro_module_content = get_copyright_header() + "module(\n"
+            rosdistro_module_content += '    name = "{0}",\n'.format(rosdistro_module_name)
+            rosdistro_module_content += '    version = "{0}",\n'.format(rosdistro_version)
+            rosdistro_module_content += ")\n"
+            with open(os.path.join(rosdistro_version_dir, "MODULE.bazel"), "w") as f:
+                f.write(rosdistro_module_content)
 
-# BCR deps
-{bcr_deps}
-bazel_dep(name = "toolchains_llvm", version = "1.6.0")
-
-# RCR deps
-""".format(name=args.ros_distro, version=args.ros_tag_date, bcr_deps="\n".join(DEFAULT_DEPS))
+            # Generate ros module
+            ros_module_name = "ros"
+            ros_version = "{0}.{1}".format(distro, args.ros_tag_date)
+            ros_pkg_dir = os.path.join(overlay.repo.repo_dir, "modules", ros_module_name)
+            ros_version_dir = os.path.join(ros_pkg_dir, ros_version)
+            make_dir(ros_version_dir)
+            
+            commit = subprocess.check_output(['git', 'ls-remote', 'https://github.com/ros2/ros2.git', 'refs/heads/{0}'.format(distro)]).decode('utf-8').split()[0]
+            ros_url = "https://github.com/ros2/ros2/archive/{0}.zip".format(commit)
+            
+            with tempfile.NamedTemporaryFile(suffix=".zip") as tmpf:
+                download_file(ros_url, tmpf.name)
+                ros_integrity = _calculate_sha256(tmpf.name)
+                
+            ros_source_json = {
+                "url": ros_url,
+                "integrity": ros_integrity,
+                "strip_prefix": "ros2-{0}".format(commit)
+            }
+            with open(os.path.join(ros_version_dir, "source.json"), "w") as f:
+                json.dump(ros_source_json, f, indent=4)
+                f.write("\n")
+                
+            ros_metadata_path = os.path.join(ros_pkg_dir, "metadata.json")
+            ros_metadata = {"versions": []}
+            if os.path.exists(ros_metadata_path):
+                with open(ros_metadata_path, 'r') as f:
+                    ros_metadata = json.load(f)
+            if ros_version not in ros_metadata["versions"]:
+                ros_metadata["versions"].append(ros_version)
+                ros_metadata["versions"].sort()
+            with open(ros_metadata_path, "w") as f:
+                json.dump(ros_metadata, f, indent=4)
+                f.write("\n")
+                
+            module_content = get_copyright_header() + "\n"
+            module_content += "module(\n"
+            module_content += '    name = "{0}",\n'.format(ros_module_name)
+            module_content += '    version = "{0}",\n'.format(ros_version)
+            module_content += ")\n\n"
+            module_content += "# RCR deps\n"
+            module_content += 'bazel_dep(name = "rosdistro", version = "{0}.{1}")\n'.format(distro, args.ros_tag_date)
+            
             pkg_names = get_package_names(distro_obj)[0]
             distribution_modules = []
             for pkg in sorted(pkg_names):
@@ -247,154 +322,10 @@ bazel_dep(name = "toolchains_llvm", version = "1.6.0")
                 except Exception as e:
                     warn("Failed to get version for package %s: %s" % (pkg, e))
 
-            module_content += """
-# A lot of the tooling for IDL generation requires a Python 3.12 toolchain
-# to work. You need to configure your workspace correctly to provide one.
-
-python = use_extension("@rules_python//python/extensions:python.bzl", "python")
-python.toolchain(
-    python_version = "3.11",
-    is_default = True,
-)
-
-# Having a self-contained C++ toolchain prevents bazel from polling PATH
-# for a compiler, making the builds less reliant on the host environment.
-
-llvm = use_extension("@toolchains_llvm//toolchain/extensions:llvm.bzl", "llvm")
-llvm.toolchain(llvm_version = "20.1.7")
-use_repo(llvm, "llvm_toolchain")
-
-register_toolchains("@llvm_toolchain//:all")
-
-# Uncomment when writing release patches.
-# include("//:dev.MODULE.bazel")
-
-"""
-
-            with open(os.path.join(release_dir, "MODULE.bazel"), "w") as f:
+            with open(os.path.join(ros_version_dir, "MODULE.bazel"), "w") as f:
                 f.write(module_content)
 
-            with open(os.path.join(release_dir, "BUILD.bazel"), "w") as f:
-                f.write(get_copyright_header())
-
-            with open(os.path.join(release_dir, ".bazelversion"), "w") as f:
-                f.write("9.0.0")
-
-            with open(os.path.join(release_dir, ".bazelignore"), "w") as f:
-                f.write("vanilla\n")
-
-            with open(os.path.join(release_dir, ".bazelrc"), "w") as f:
-                f.write(get_copyright_header())
-                f.write("""
-# Augment the BCR with a few of our own modules in the docs folder.
-common --registry=file://%workspace%/../../..        --registry=https://bcr.bazel.build
-
-# Remote cache.
-common --remote_cache=https://storage.googleapis.com/intrinsic-opensource-buildcache
-common --remote_upload_local_results=false
-common --remote_cache_compression=true
-
-# Define ROS_HOME so that tests don't try and write to ~/.ros_home by default.
-common --test_env=ROS_HOME=".ros"
-
-# Force Bazel to stop producing implicit __init__.py files in Python. This
-# is so that we can use PEP420 namespace package feature for IDL generation.
-common --incompatible_default_to_explicit_init_py
-
-# Force Bazel to use an environment with a static value for PATH, and not to
-# use the LD_LIBRARY_PATH. This makes builds robust to terminal refreshes.
-common --incompatible_strict_action_env
-
-# The zenoh tests must be allowed to contact the network to communicate with
-# the zenohd router, or else they will fail.
-test --sandbox_default_allow_network=true
-
-# Use C++17 standard by default across the whole repo.
-build --cxxopt="-std=c++17"
-
-# Ensure that we use toolchains_llvm instead of the host toolchain.
-build --action_env="BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1"
-
-# Tell Bazel to use the pre-compiled binary instead of building from source
-build --@protobuf//bazel/toolchains:prefer_prebuilt_protoc
-
-# ASAN
-build:asan --strip=never
-build:asan --copt=-fsanitize=address
-build:asan --copt=-O0
-build:asan --copt=-fno-omit-frame-pointer
-build:asan --linkopt=-fsanitize=address
-
-# MSAN
-build:msan --strip=never
-build:msan --copt=-fsanitize=memory
-build:msan --copt=-O0
-build:msan --copt=-fno-omit-frame-pointer
-build:msan --linkopt=-fsanitize=memory
-
-# TSAN
-build:tsan --strip=never
-build:tsan --copt=-fsanitize=thread
-build:tsan --copt=-O0
-build:tsan --copt=-fno-omit-frame-pointer
-build:tsan --linkopt=-fsanitize=thread
-
-# Allow for local testing of distribution.
-common:distribution --target_pattern_file=distribution.txt
-
-# Vendoring for development
-""")
-                # Write vendor stanza with --repo for each module
-                if distribution_modules:
-                    vendor_lines = ['vendor --vendor_dir=vendor']
-                    for mod in distribution_modules:
-                        vendor_lines.append('    --repo=@{0}'.format(mod))
-                    # Join with ' \\\n' for line continuation, except the last line
-                    f.write(' \\\n'.join(vendor_lines))
-                    f.write('\n')
-
-            with open(os.path.join(release_dir, "distribution.txt"), "w") as f:
-                for mod in distribution_modules:
-                    f.write("@{0}//...\n".format(mod))
-
-            with open(os.path.join(release_dir, "dev.MODULE.bazel"), "w") as f:
-                f.write(get_copyright_header())
-                for mod in distribution_modules:
-                    f.write('local_path_override(\n')
-                    f.write('    module_name = "{0}",\n'.format(mod))
-                    f.write('    path = "./vendor/{0}+",\n'.format(mod))
-                    f.write(')\n')
-
-            # Generate vendor/VENDOR.bazel with ignore() for all BCR deps
-            vendor_dir = os.path.join(release_dir, "vendor")
-            make_dir(vendor_dir)
-            bcr_names = set(['toolchains_llvm'])
-            for dep in DEFAULT_DEPS:
-                m = re.search(r'name\s*=\s*"([^"]+)"', dep)
-                if m:
-                    bcr_names.add(m.group(1))
-            for dep_str in DEP_NAME_OVERRIDE.values():
-                m = re.search(r'name\s*=\s*"([^"]+)"', dep_str)
-                if m:
-                    bcr_names.add(m.group(1))
-            with open(os.path.join(vendor_dir, "VENDOR.bazel"), "w") as f:
-                f.write('###############################################################################\n')
-                f.write('# This file is used to configure how external repositories are handled in vendor mode.\n')
-                f.write('# ONLY the two following functions can be used:\n')
-                f.write('#\n')
-                f.write("# ignore('@@<canonical repo name>', ...) is used to completely ignore this repo from vendoring.\n")
-                f.write('# Bazel will use the normal external cache and fetch process for this repo.\n')
-                f.write('#\n')
-                f.write("# pin('@@<canonical repo name>', ...) is used to pin the contents of this repo under the vendor\n")
-                f.write('# directory as if there is a --override_repository flag for this repo.\n')
-                f.write('# Note that Bazel will NOT update the vendored source for this repo while running vendor command\n')
-                f.write("# unless it's unpinned. The user can modify and maintain the vendored source for this repo manually.\n")
-                f.write('###############################################################################\n')
-                f.write('\n')
-                for name in sorted(bcr_names):
-                    f.write('ignore("@@{0}")\n'.format(name))
-
-            distro_changes.append("Generated release artifacts for %s" % release_dir)
+            distro_changes.append("Generated rosdistro and ros modules for %s" % distro)
 
         num_changes = 0
         for distro_name in total_changes:

@@ -475,10 +475,28 @@ class BazelModule(object):
         self.name = name
         self.version = version
         self.distro = distro
-        self.deps = set()
-        self.bcr_deps = DEFAULT_DEPS
+        # All RCR modules must point to a consistent rosdistro version,
+        # which provides a python and rust context. This makes sure that
+        # all Bazel packages use the same version of pip / crate deps.
+        self.rcr_deps = set()
+        self.bcr_deps = set()
 
     def add_depend(self, depend, internal=True):
+        """
+        Add a dependency to this module. The name is 'depend' and it is
+        marked 'internal' if it is included in the distribution.yaml.
+        """
+        # Internal deps must point to a package declared in rosdistro,
+        # and also not be overriden to point to a BCR module. This is
+        # to handle things like mimick_vendor.
+        is_bcr = depend in DEP_NAME_OVERRIDE.keys()
+        if internal and not is_bcr:
+            self.rcr_deps.add(depend)
+            return
+        # If we get to this point we know that the dependency is not in
+        # the RCR. We now need to work out what to add as a result of
+        # this dependency. In some cases one udep key (libboost-all-dev)
+        # must map to multiple bazel_dep() calls.
         is_boost = depend.startswith("libboost-") \
             or depend.startswith("boost")
         is_qt5 = depend.startswith("libqt5") \
@@ -500,10 +518,7 @@ class BazelModule(object):
         is_python = depend.startswith("python3-") \
             or depend.startswith("python-")
         is_ignored = depend in DEP_IGNORES
-        is_bcr = depend in DEP_NAME_OVERRIDE.keys()
-        if internal:
-            self.deps.add(depend)
-        elif is_bcr:
+        if is_bcr:
             self.bcr_deps.add(DEP_NAME_OVERRIDE[depend])
         elif is_boost:
             self.bcr_deps.update(BOOST_DEPS)
@@ -519,6 +534,9 @@ class BazelModule(object):
             raise RuntimeError(f"Unknown key: {depend}")
 
     def get_module_text(self):
+        """
+        Generaytes the MODULE.bazel contents for the current Bazel module.
+        """
         ret = get_copyright_header()
         ret += "# ROS package information\n"
         ret += 'module(\n'
@@ -526,20 +544,17 @@ class BazelModule(object):
         ret += '    version = "{0}",\n'.format(self.version)
         ret += '    bazel_compatibility = [">=7.2.1"],\n'
         ret += ')\n\n'
-        ret += '# BCR dependencies\n'
-        for dep in sorted(self.bcr_deps):
-            ret += dep + '\n'
-        if self.deps:
-             ret += '\n# RCR Dependencies\n'
-             for dep in sorted(self.deps):
-                 try:
-                    if dep in DEP_NAME_OVERRIDE:
-                        ret += DEP_NAME_OVERRIDE[dep] + '\n'
-                    elif dep not in DEP_IGNORES:
-                        dep_version = get_bazel_version(self.distro, dep)
-                        ret += 'bazel_dep(name = "{0}", version = "{1}")\n'.format(dep, dep_version)
-                 except Exception:
-                    pass
+        if self.bcr_deps:
+            ret += '# BCR dependencies\n'
+            for dep in sorted(self.bcr_deps):
+                ret += dep + '\n'
+        ret += '\n# RCR Dependencies\n'
+        ret += 'bazel_dep(name = "rosdistro", version = "{0}.{1}")\n'.format(
+            self.distro.name, self.distro.ros_tag_date)
+        for dep in sorted(self.rcr_deps):
+            if dep not in DEP_NAME_OVERRIDE and dep not in DEP_IGNORES:
+                dep_version = get_bazel_version(self.distro, dep)
+                ret += 'bazel_dep(name = "{0}", version = "{1}")\n'.format(dep, dep_version)
         return ret
 
 
