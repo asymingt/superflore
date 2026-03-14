@@ -87,6 +87,7 @@ setup(
             'superflore-gen-ebuilds = superflore.generators.ebuild:main',
             'superflore-gen-oe-recipes = superflore.generators.bitbake:main',
             'superflore-gen-nix = superflore.generators.nix:main',
+            'superflore-gen-bazel = superflore.generators.bazel:main',
             'superflore-check-ebuilds = superflore.test_integration.gentoo:main',
         ]
     }
